@@ -1,0 +1,737 @@
+import logging
+import math
+import gradio as gr
+from PIL import Image
+import base64
+import os
+from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
+from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
+from src.unet_hacked_tryon import UNet2DConditionModel
+from src.enhanced_garment_net import EnhancedGarmentNetWithTimestep
+from transformers import (
+    CLIPImageProcessor,
+    CLIPVisionModelWithProjection,
+    CLIPTextModel,
+    CLIPTextModelWithProjection,
+)
+from diffusers import DDPMScheduler,AutoencoderKL
+from typing import List
+
+import torch
+import os
+import base64
+from transformers import AutoTokenizer
+import numpy as np
+from utils_mask import get_mask_location
+from torchvision import transforms
+import apply_net
+from preprocess.humanparsing.run_parsing import Parsing
+from preprocess.openpose.run_openpose import OpenPose
+from detectron2.data.detection_utils import convert_PIL_to_numpy,_apply_exif_orientation
+from torchvision.transforms.functional import to_pil_image
+from src.background_processor import BackgroundProcessor
+
+def get_logo_base64():
+    with open("df.png", "rb") as image_file:
+        return "data:image/png;base64," + base64.b64encode(image_file.read()).decode('utf-8')
+
+# Function to encode font files to base64
+def get_font_css():
+    fonts_dir = os.path.join(os.path.dirname(__file__), 'fonts')
+    font_files = {
+        'PPValve-PlainExtrabold': 'PPValve-PlainExtrabold.otf',
+        'PPValve-PlainExtraboldItalic': 'PPValve-PlainExtraboldItalic.otf',
+        'PPValve-PlainExtralight': 'PPValve-PlainExtralightItalic.otf',
+        'PPValve-PlainMedium': 'PPValve-PlainMedium.otf',
+        'PPValve-PlainMediumItalic': 'PPValve-PlainMediumItalic.otf',
+    }
+    
+    css_fonts = ""
+    
+    # Create font-face rules with embedded base64 data
+    for font_family, font_file in font_files.items():
+        font_path = os.path.join(fonts_dir, font_file)
+        if os.path.exists(font_path):
+            with open(font_path, "rb") as f:
+                font_data = f.read()
+                font_base64 = base64.b64encode(font_data).decode('utf-8')
+                
+                # Determine weight based on font name
+                weight = "800" if "Extrabold" in font_file else "200" if "Extralight" in font_file else "500"
+                style = "italic" if "Italic" in font_file else "normal"
+                
+                css_fonts += f"""
+    @font-face {{
+        font-family: '{font_family}';
+        src: url('data:font/otf;base64,{font_base64}') format('opentype');
+        font-weight: {weight};
+        font-style: {style};
+    }}"""
+    
+    # Encode the df.png icon to base64
+    icon_path = os.path.join(os.path.dirname(__file__), 'df.png')
+    icon_base64 = ""
+    if os.path.exists(icon_path):
+        with open(icon_path, "rb") as f:
+            icon_data = f.read()
+            icon_base64 = base64.b64encode(icon_data).decode('utf-8')
+    
+    css = f"""
+    <style>
+    {css_fonts}
+    
+    :root {{
+        --primary-color: #9f1c35;
+        --secondary-color: #e58097;
+        --accent-color: #f97316;
+        --background-color: #f8fafc;
+        --text-color: #1e293b;
+        --border-radius: 12px;
+        --box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+    }}
+    
+    body {{
+        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+    }}
+    
+    .container {{
+        max-width: 1200px;
+        margin: 0 auto;
+    }}
+    
+    .app-header {{
+        display: flex;
+        align-items: left;
+        justify-content: left;
+        gap: 15px;
+    }}
+    
+    .app-icon {{
+        width: 50px;
+        height: 50px;
+        background-image: url('data:image/png;base64,{icon_base64}');
+        background-size: contain;
+        background-repeat: no-repeat;
+        background-position: left;
+    }}
+    
+    .app-header h1 {{
+        font-family: 'PPValve-PlainMedium', sans-serif !important;
+        font-size: 56px !important;
+        letter-spacing: 1px;
+        color: white !important;
+        -webkit-text-fill-color: white !important;
+        margin: 10px 0 5px 0 !important;
+        text-align: left;
+        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
+    }}
+    
+    .app-description {{
+        font-family: 'PPValve-PlainMedium', sans-serif !important;
+        font-size: 18px !important;
+        text-align: left;
+        margin-bottom: 30px !important;
+        color: var(--text-color);
+        opacity: 0.8;
+    }}
+    
+    .gradio-container {{
+        margin-top: 0 !important;
+    }}
+    
+    .input-label {{
+        font-family: 'PPValve-PlainMedium', sans-serif !important;
+        font-weight: 500 !important;
+        font-size: 18px !important;
+        margin-bottom: 8px !important;
+        color: var(--text-color);
+    }}
+    
+    .try-on-button {{
+        font-family: 'PPValve-PlainMedium', sans-serif !important;
+        font-size: 20px !important;
+        padding: 14px 28px !important;
+        background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: var(--border-radius) !important;
+        box-shadow: var(--box-shadow) !important;
+        transition: transform 0.2s ease, box-shadow 0.2s ease !important;
+        margin: 20px auto !important;
+        display: block !important;
+        width: 60% !important;
+    }}
+    
+    .try-on-button:hover {{
+        transform: translateY(-2px) !important;
+        box-shadow: 0 15px 30px -5px rgba(0, 0, 0, 0.2) !important;
+    }}
+    
+    .advanced-settings-header {{
+        font-family: 'PPValve-PlainMedium', sans-serif !important;
+        margin-top: 15px !important;
+    }}
+    
+    /* Make image upload areas more visually appealing */
+    .file-preview {{
+        border-radius: var(--border-radius) !important;
+        border: 2px dashed #ccc !important;
+        transition: all 0.3s ease !important;
+    }}
+    
+    .file-preview:hover {{
+        border-color: var(--primary-color) !important;
+    }}
+    
+    /* Enhance the output image presentation */
+    #output-img, #masked-img {{
+        border-radius: var(--border-radius) !important;
+        box-shadow: var(--box-shadow) !important;
+        transition: transform 0.3s ease !important;
+    }}
+    
+    #output-img:hover, #masked-img:hover {{
+        transform: scale(1.02) !important;
+    }}
+    
+    /* Style the examples section */
+    .examples-panel {{
+        background-color: rgba(255, 255, 255, 0.7) !important;
+        border-radius: var(--border-radius) !important;
+        padding: 15px !important;
+    }}
+    
+    /* Add card-like effect to columns */
+    .gr-panel {{
+        background-color: white !important;
+        border-radius: var(--border-radius) !important;
+        box-shadow: var(--box-shadow) !important;
+        padding: 20px !important;
+        margin: 10px !important;
+        transition: transform 0.2s ease !important;
+    }}
+    
+    .gr-panel:hover {{
+        transform: translateY(-5px) !important;
+    }}
+    
+    /* Style the accordions */
+    .gr-accordion {{
+        border-radius: var(--border-radius) !important;
+        overflow: hidden !important;
+    }}
+    
+    /* Style the number inputs */
+    .gr-number-input {{
+        border-radius: 8px !important;
+    }}
+    
+    /* Add a progress bar animation during processing */
+    @keyframes processing {{
+        0% {{ width: 0%; }}
+        100% {{ width: 100%; }}
+    }}
+    
+    .processing-overlay {{
+        position: absolute;
+        bottom: 0;
+        left: 0;
+        height: 5px;
+        background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
+        animation: processing 10s ease-in-out infinite;
+    }}
+    
+    /* Add a status indicator */
+    .status-ready {{
+        display: inline-block;
+        padding: 5px 10px;
+        background-color: #10b981;
+        color: white;
+        border-radius: 20px;
+        font-size: 14px;
+        margin-top: 10px;
+    }}
+    
+    .footer {{
+        text-align: center;
+        margin-top: 40px;
+        padding: 20px;
+        font-family: 'PPValve-PlainMedium', sans-serif;
+        color: var(--text-color);
+        opacity: 0.7;
+    }}
+    </style>
+    """
+    return css
+
+def pil_to_binary_mask(pil_image, threshold=0):
+    np_image = np.array(pil_image)
+    grayscale_image = Image.fromarray(np_image).convert("L")
+    binary_mask = np.array(grayscale_image) > threshold
+    mask = np.zeros(binary_mask.shape, dtype=np.uint8)
+    for i in range(binary_mask.shape[0]):
+        for j in range(binary_mask.shape[1]):
+            if binary_mask[i,j] == True :
+                mask[i,j] = 1
+    mask = (mask*255).astype(np.uint8)
+    output_mask = Image.fromarray(mask)
+    return output_mask
+
+
+base_path = 'yisol/IDM-VTON'
+example_path = os.path.join(os.path.dirname(__file__), 'example')
+
+unet = UNet2DConditionModel.from_pretrained(
+    base_path,
+    subfolder="unet",
+    torch_dtype=torch.float16,
+)
+unet.requires_grad_(False)
+
+# This is suggestion from Claude for enhanced garment net
+#enhancedGarmentNet = EnhancedGarmentNetWithTimestep()
+#enhancedGarmentNet.to(dtype=torch.float16)
+
+tokenizer_one = AutoTokenizer.from_pretrained(
+    base_path,
+    subfolder="tokenizer",
+    revision=None,
+    use_fast=False,
+)
+tokenizer_two = AutoTokenizer.from_pretrained(
+    base_path,
+    subfolder="tokenizer_2",
+    revision=None,
+    use_fast=False,
+)
+noise_scheduler = DDPMScheduler.from_pretrained(base_path, subfolder="scheduler")
+
+text_encoder_one = CLIPTextModel.from_pretrained(
+    base_path,
+    subfolder="text_encoder",
+    torch_dtype=torch.float16,
+)
+text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
+    base_path,
+    subfolder="text_encoder_2",
+    torch_dtype=torch.float16,
+)
+image_encoder = CLIPVisionModelWithProjection.from_pretrained(
+    base_path,
+    subfolder="image_encoder",
+    torch_dtype=torch.float16,
+    )
+vae = AutoencoderKL.from_pretrained(base_path,
+                                    subfolder="vae",
+                                    torch_dtype=torch.float16,
+)
+
+# "stabilityai/stable-diffusion-xl-base-1.0",
+UNet_Encoder = UNet2DConditionModel_ref.from_pretrained(
+    base_path,
+    subfolder="unet_encoder",
+    torch_dtype=torch.float16,
+)
+
+
+parsing_model = Parsing(0)
+openpose_model = OpenPose(0)
+
+UNet_Encoder.requires_grad_(False)
+image_encoder.requires_grad_(False)
+vae.requires_grad_(False)
+unet.requires_grad_(False)
+text_encoder_one.requires_grad_(False)
+text_encoder_two.requires_grad_(False)
+tensor_transfrom = transforms.Compose(
+            [
+                transforms.ToTensor(),
+                transforms.Normalize([0.5], [0.5]),
+            ]
+    )
+
+pipe = TryonPipeline.from_pretrained(
+        base_path,
+        unet=unet,
+        vae=vae,
+        feature_extractor= CLIPImageProcessor(),
+        text_encoder = text_encoder_one,
+        text_encoder_2 = text_encoder_two,
+        tokenizer = tokenizer_one,
+        tokenizer_2 = tokenizer_two,
+        scheduler = noise_scheduler,
+        image_encoder=image_encoder,
+        torch_dtype=torch.float16,
+)
+pipe.unet_encoder = UNet_Encoder
+# pipe.garment_net = enhancedGarmentNet
+
+# Standard size of shein images
+#WIDTH = int(4160/5)
+#HEIGHT = int(6240/5)
+# Standard size on which model is trained
+WIDTH = int(768)
+HEIGHT = int(1024)
+POSE_WIDTH = int(WIDTH/2)  # int(WIDTH/2)
+POSE_HEIGHT = int(HEIGHT/2)  #int(HEIGHT/2)
+ARM_WIDTH = "dc" # "hd" # hd -> full sleeve, dc for half sleeve 
+CATEGORY = "upper_body" # "lower_body"
+
+
+def is_cropping_required(width, height):
+    # If aspect ratio is 1.33, which is same as standard 3x4 ( 768x1024 ), then no need to crop, else crop
+    aspect_ratio = round(height/width, 2)
+    if aspect_ratio == 1.33:
+        return False
+    return True
+
+
+def start_tryon(human_img_dict, garm_img, denoise_steps, seed):
+    logging.info("Starting try on")
+    print(f"Input: {human_img_dict}")
+    #device = "cuda"
+    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
+    
+    openpose_model.preprocessor.body_estimation.model.to(device)
+    pipe.to(device)
+    pipe.unet_encoder.to(device)
+    # pipe.garment_net.to(device)
+    
+    # human_img_orig = human_img_dict["background"].convert("RGB")   # ImageEditor
+    human_img_orig = human_img_dict.convert("RGB")     # Image
+    
+    # Always use auto-crop & auto-mask (previously controlled by UI toggles)
+    is_checked = True  # Auto-generated mask always enabled
+    
+    # is_checked_crop as True if original AR is not same as 2x3 as expected by model
+    w, h = human_img_orig.size
+    is_checked_crop = is_cropping_required(w, h)
+
+    garm_img= garm_img.convert("RGB").resize((WIDTH,HEIGHT))
+    if is_checked_crop:
+        # This will crop the image to make it Aspect Ratio of 3 x 4. And then at the end revert it back to original dimentions
+        width, height = human_img_orig.size
+        target_width = int(min(width, height * (3 / 4)))
+        target_height = int(min(height, width * (4 / 3)))        
+        
+        left = (width - target_width) / 2
+        right = (width + target_width) / 2
+        # for Landmark, model sizes are 594x879, so we need to reduce the height. In some case the garment on the model is
+        # also getting removed when reducing size from bottom. So we will only reduce height from top for now
+        top = (height - target_height) #top = (height - target_height) / 2        
+        bottom = height #bottom = (height + target_height) / 2
+        cropped_img = human_img_orig.crop((left, top, right, bottom))
+        
+        crop_size = cropped_img.size
+        human_img = cropped_img.resize((WIDTH, HEIGHT))
+    else:
+        human_img = human_img_orig.resize((WIDTH, HEIGHT))
+
+    if is_checked:
+        # internally openpose_model is resizing human_img to resolution 384 if not passed as input
+        keypoints = openpose_model(human_img.resize((POSE_WIDTH, POSE_HEIGHT)))
+        model_parse, _ = parsing_model(human_img.resize((POSE_WIDTH, POSE_HEIGHT)))
+        # internally get mask location function is resizing model_parse to 384x512 if width & height not passed
+        mask, mask_gray = get_mask_location(ARM_WIDTH, CATEGORY, model_parse, keypoints)
+        mask = mask.resize((WIDTH, HEIGHT))
+        logging.info("Mask location on model identified")
+    else:
+        mask = pil_to_binary_mask(human_img_dict['layers'][0].convert("RGB").resize((WIDTH, HEIGHT)))
+        # mask = transforms.ToTensor()(mask)
+        # mask = mask.unsqueeze(0)
+    mask_gray = (1-transforms.ToTensor()(mask)) * tensor_transfrom(human_img)
+    mask_gray = to_pil_image((mask_gray+1.0)/2.0)
+
+
+    human_img_arg = _apply_exif_orientation(human_img.resize((POSE_WIDTH,POSE_HEIGHT)))
+    human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
+     
+    
+
+    args = apply_net.create_argument_parser().parse_args(('show', './configs/densepose_rcnn_R_50_FPN_s1x.yaml', './ckpt/densepose/model_final_162be9.pkl', 'dp_segm', '-v', '--opts', 'MODEL.DEVICE', device))
+    # verbosity = getattr(args, "verbosity", None)
+    pose_img = args.func(args,human_img_arg)    
+    pose_img = pose_img[:,:,::-1]    
+    pose_img = Image.fromarray(pose_img).resize((WIDTH,HEIGHT))
+    
+    with torch.no_grad():
+        # Extract the images
+        with torch.cuda.amp.autocast():
+            with torch.no_grad():
+                # Using a default garment description
+                prompt = "model is wearing a garment"
+                negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
+                with torch.inference_mode():
+                    (
+                        prompt_embeds,
+                        negative_prompt_embeds,
+                        pooled_prompt_embeds,
+                        negative_pooled_prompt_embeds,
+                    ) = pipe.encode_prompt(
+                        prompt,
+                        num_images_per_prompt=1,
+                        do_classifier_free_guidance=True,
+                        negative_prompt=negative_prompt,
+                    )
+                                    
+                    prompt = "a photo of a garment"
+                    negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
+                    if not isinstance(prompt, List):
+                        prompt = [prompt] * 1
+                    if not isinstance(negative_prompt, List):
+                        negative_prompt = [negative_prompt] * 1
+                    with torch.inference_mode():
+                        (
+                            prompt_embeds_c,
+                            _,
+                            _,
+                            _,
+                        ) = pipe.encode_prompt(
+                            prompt,
+                            num_images_per_prompt=1,
+                            do_classifier_free_guidance=False,
+                            negative_prompt=negative_prompt,
+                        )
+
+
+
+                    pose_img =  tensor_transfrom(pose_img).unsqueeze(0).to(device,torch.float16)
+                    garm_tensor =  tensor_transfrom(garm_img).unsqueeze(0).to(device,torch.float16)
+                    generator = torch.Generator(device).manual_seed(seed) if seed is not None else None
+                    images = pipe(
+                        prompt_embeds=prompt_embeds.to(device,torch.float16),
+                        negative_prompt_embeds=negative_prompt_embeds.to(device,torch.float16),
+                        pooled_prompt_embeds=pooled_prompt_embeds.to(device,torch.float16),
+                        negative_pooled_prompt_embeds=negative_pooled_prompt_embeds.to(device,torch.float16),
+                        num_inference_steps=denoise_steps,
+                        generator=generator,
+                        strength = 1.0,
+                        pose_img = pose_img.to(device,torch.float16),
+                        text_embeds_cloth=prompt_embeds_c.to(device,torch.float16),
+                        cloth = garm_tensor.to(device,torch.float16),
+                        mask_image=mask,
+                        image=human_img, 
+                        height=HEIGHT,
+                        width=WIDTH,
+                        ip_adapter_image = garm_img.resize((WIDTH,HEIGHT)),
+                        guidance_scale=2.0,
+                    )[0]
+
+    if is_checked_crop:
+        out_img = images[0].resize(crop_size)        
+        human_img_orig.paste(out_img, (int(left), int(top)))    
+        final_image = human_img_orig
+    else:
+        final_image = images[0]
+    
+    return final_image, mask_gray
+
+garm_list = os.listdir(os.path.join(example_path,"cloth"))
+garm_list_path = [os.path.join(example_path,"cloth",garm) for garm in garm_list]
+
+human_list = os.listdir(os.path.join(example_path,"human"))
+human_list_path = [os.path.join(example_path,"human",human) for human in human_list]
+
+human_ex_list = []
+human_ex_list = human_list_path # Image
+""" if using ImageEditor instead of Image while taking input, use this - ImageEditor
+for ex_human in human_list_path:
+    ex_dict= {}
+    ex_dict['background'] = ex_human
+    ex_dict['layers'] = None
+    ex_dict['composite'] = None
+    human_ex_list.append(ex_dict)
+"""
+##default human
+
+
+# api_open=True will allow this API to be hit using curl
+image_blocks = gr.Blocks(theme='CultriX/gradio-theme', css=get_font_css()).queue(api_open=True)
+with image_blocks as demo:
+    # Header section with title only (no emoji)
+    with gr.Row(elem_classes=["header-container"]):
+        logo_base64 = get_logo_base64()
+        gr.HTML(f"""
+        <div style="display: flex; align-items: center; gap: 15px;">
+            <img src="{logo_base64}" alt="Logo" style="width: 50px; height: 50px;">
+            <h1 style="font-family: 'PPValve-PlainMedium', sans-serif; font-size: 56px; letter-spacing: 1px; color: white; -webkit-text-fill-color: white; margin: 10px 0 5px 0; text-align: left; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">DiffuseFit</h1>
+        </div>
+        """)
+            
+    # Description and intro
+    with gr.Row():
+        gr.Markdown(
+            "A virtual try-on experience powered by Stable Diffusion XL and GarmNet. Upload your photo and a garment to see how it looks on you!",
+            elem_classes=["app-description"]
+        )
+    
+    # Main content area with cards
+    with gr.Row(elem_classes=["main-container"]):
+        # Input section - Human Image
+        with gr.Column(elem_classes=["input-card"]):
+            gr.Markdown("### Upload Your Photo", elem_classes=["card-header"])
+            imgs = gr.Image(
+                sources=['upload', 'webcam'], 
+                type='pil', 
+                label='Human Image', 
+                elem_classes=["input-image"],
+                height=400
+            )
+            # Examples directly shown without accordion
+            example = gr.Examples(
+                inputs=imgs,
+                examples_per_page=6,
+                examples=human_ex_list
+            )
+
+        # Input section - Garment Image
+        with gr.Column(elem_classes=["input-card"]):
+            gr.Markdown("### Upload Garment", elem_classes=["card-header"])
+            garm_img = gr.Image(
+                sources=['upload'], 
+                type="pil", 
+                label="Garment Image", 
+                elem_classes=["input-image"],
+                height=400
+            )
+            # Examples directly shown without accordion
+            example = gr.Examples(
+                inputs=garm_img,
+                examples_per_page=6,
+                examples=garm_list_path
+            )
+        
+        # Output section - Result with Generate button inside
+        with gr.Column(elem_classes=["output-card"]):
+            gr.Markdown("### Virtual Try-On Result", elem_classes=["card-header"])
+            
+            # Output image with tabs for final result and mask
+            with gr.Tabs(elem_classes=["output-tabs"]):
+                with gr.TabItem("Final Result", elem_classes=["tab-item"]):
+                    image_out = gr.Image(
+                        label="Try-on Result", 
+                        elem_id="output-img", 
+                        show_share_button=True,
+                        height=500
+                    )
+                with gr.TabItem("Mask View", elem_classes=["tab-item"]):
+                    masked_img = gr.Image(
+                        label="Mask Visualization", 
+                        elem_id="masked-img", 
+                        show_share_button=False,
+                        height=500
+                    )
+            
+            # Generate button moved below the output tabs
+            processing_indicator = gr.Markdown("", elem_id="processing-status", visible=False)
+            try_button = gr.Button(
+                value="Generate Try-On", 
+                variant="primary",
+                elem_classes=["try-on-button"]
+            )
+    
+    # Move advanced settings to a standalone row
+    with gr.Row(elem_classes=["control-panel"]):
+        with gr.Accordion("Advanced Settings", open=False, elem_classes=["advanced-settings"]):
+            with gr.Row():
+                denoise_steps = gr.Slider(
+                    minimum=20, 
+                    maximum=40, 
+                    value=30, 
+                    step=1, 
+                    label="Denoising Steps", 
+                    info="More steps = better quality but slower processing",
+                    elem_classes=["slider-control"]
+                )
+                seed = gr.Number(
+                    label="Random Seed", 
+                    minimum=-1, 
+                    maximum=2147483647, 
+                    step=1, 
+                    value=42,
+                    info="Set to -1 for random results each time"
+                )
+            
+            with gr.Row():
+                gr.Markdown("*Higher denoising steps will result in better quality but longer processing time.*", 
+                           elem_classes=["settings-note"])
+    
+    # Footer with info
+    with gr.Row(elem_classes=["footer"]):
+        gr.Markdown("Made with 💖 by Deeptanshu")
+
+    # Add JavaScript for better UI interactivity
+    demo.load(js="""
+    function setupUI() {
+        // Add processing animation when button is clicked
+        const tryOnButton = document.querySelector('.try-on-button button');
+        const outputImg = document.getElementById('output-img');
+        
+        if (tryOnButton) {
+            tryOnButton.addEventListener('click', function() {
+                // Add processing overlay
+                const overlay = document.createElement('div');
+                overlay.className = 'processing-overlay';
+                overlay.id = 'processing-overlay';
+                document.body.appendChild(overlay);
+                
+                // Change button state
+                this.innerHTML = 'Processing...';
+                this.disabled = true;
+                
+                // We'll remove this when the output is updated
+                const observer = new MutationObserver((mutations) => {
+                    if (outputImg && outputImg.querySelector('img')) {
+                        // Processing done
+                        this.innerHTML = 'Generate Try-On';
+                        this.disabled = false;
+                        
+                        // Remove the overlay
+                        const overlay = document.getElementById('processing-overlay');
+                        if (overlay) {
+                            overlay.remove();
+                        }
+                        
+                        observer.disconnect();
+                    }
+                });
+                
+                observer.observe(document.body, { childList: true, subtree: true });
+            });
+        }
+    }
+    
+    // Run setup when document is fully loaded
+    if (document.readyState === 'complete') {
+        setupUI();
+    } else {
+        window.addEventListener('load', setupUI());
+    }
+    """)
+    
+    # Define what happens when try-on button is clicked
+    def update_processing_status(human, garment):
+        if human is None or garment is None:
+            return gr.update(value="⚠️ Please upload both a human image and a garment image", visible=True)
+        return gr.update(value="Processing your try-on... This may take a minute", visible=True)
+    
+    def clear_processing_status(result, mask):
+        return gr.update(value="", visible=False)
+    
+    # Set up the click events with status updates
+    try_button.click(
+        fn=update_processing_status,
+        inputs=[imgs, garm_img],
+        outputs=[processing_indicator],
+    ).then(
+        fn=start_tryon,
+        inputs=[imgs, garm_img, denoise_steps, seed],
+        outputs=[image_out, masked_img],
+        api_name='tryon'
+    ).then(
+        fn=clear_processing_status,
+        inputs=[image_out, masked_img],
+        outputs=[processing_indicator]
+    )
+
+image_blocks.launch(share=True)
