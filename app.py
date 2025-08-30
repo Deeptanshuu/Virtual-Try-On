@@ -45,21 +45,15 @@ def get_font_css():
         'PPValve-PlainMedium': 'PPValve-PlainMedium.otf',
         'PPValve-PlainMediumItalic': 'PPValve-PlainMediumItalic.otf',
     }
-    
     css_fonts = ""
-    
-    # Create font-face rules with embedded base64 data
     for font_family, font_file in font_files.items():
         font_path = os.path.join(fonts_dir, font_file)
         if os.path.exists(font_path):
             with open(font_path, "rb") as f:
                 font_data = f.read()
                 font_base64 = base64.b64encode(font_data).decode('utf-8')
-                
-                # Determine weight based on font name
                 weight = "800" if "Extrabold" in font_file else "200" if "Extralight" in font_file else "500"
                 style = "italic" if "Italic" in font_file else "normal"
-                
                 css_fonts += f"""
     @font-face {{
         font-family: '{font_family}';
@@ -67,191 +61,73 @@ def get_font_css():
         font-weight: {weight};
         font-style: {style};
     }}"""
-    
-    # Encode the df.png icon to base64
     icon_path = os.path.join(os.path.dirname(__file__), 'df.png')
     icon_base64 = ""
     if os.path.exists(icon_path):
         with open(icon_path, "rb") as f:
             icon_data = f.read()
             icon_base64 = base64.b64encode(icon_data).decode('utf-8')
-    
     css = f"""
     <style>
     {css_fonts}
-    
+
     :root {{
         --primary-color: #9f1c35;
         --secondary-color: #e58097;
         --accent-color: #f97316;
-        --background-color: #f8fafc;
-        --text-color: #1e293b;
+        --background-color: #23272a;
+        --panel-color: #23272a;
+        --input-color: #36383b;
+        --text-color: #f8fafc;
         --border-radius: 12px;
         --box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
     }}
-    
+
     body {{
-        background: linear-gradient(135deg, #f8fafc 0%, #e2e8f0 100%);
+        background: linear-gradient(135deg, #23272a 0%, #181a1b 100%);
+        color: var(--text-color) !important;
     }}
-    
-    .container {{
-        max-width: 1200px;
-        margin: 0 auto;
-    }}
-    
-    .app-header {{
-        display: flex;
-        align-items: left;
-        justify-content: left;
-        gap: 15px;
-    }}
-    
-    .app-icon {{
-        width: 50px;
-        height: 50px;
-        background-image: url('data:image/png;base64,{icon_base64}');
-        background-size: contain;
-        background-repeat: no-repeat;
-        background-position: left;
-    }}
-    
-    .app-header h1 {{
-        font-family: 'PPValve-PlainMedium', sans-serif !important;
-        font-size: 56px !important;
-        letter-spacing: 1px;
-        color: white !important;
-        -webkit-text-fill-color: white !important;
-        margin: 10px 0 5px 0 !important;
-        text-align: left;
-        text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);
-    }}
-    
-    .app-description {{
-        font-family: 'PPValve-PlainMedium', sans-serif !important;
-        font-size: 18px !important;
-        text-align: left;
-        margin-bottom: 30px !important;
-        color: var(--text-color);
-        opacity: 0.8;
-    }}
-    
-    .gradio-container {{
-        margin-top: 0 !important;
-    }}
-    
-    .input-label {{
-        font-family: 'PPValve-PlainMedium', sans-serif !important;
-        font-weight: 500 !important;
-        font-size: 18px !important;
-        margin-bottom: 8px !important;
-        color: var(--text-color);
-    }}
-    
-    .try-on-button {{
-        font-family: 'PPValve-PlainMedium', sans-serif !important;
-        font-size: 20px !important;
-        padding: 14px 28px !important;
-        background: linear-gradient(135deg, var(--primary-color), var(--secondary-color)) !important;
-        color: white !important;
-        border: none !important;
+
+    /* Outer card: match Advanced Settings (dark gray) */
+    .prompt-card, .prompt-section,
+    .gr-panel:has(.prompt-input),
+    .gr-column:has(.prompt-input),
+    div[data-testid*="column"]:has(.prompt-input) {{
+        background: var(--panel-color) !important;
+        color: var(--text-color) !important;
         border-radius: var(--border-radius) !important;
-        box-shadow: var(--box-shadow) !important;
-        transition: transform 0.2s ease, box-shadow 0.2s ease !important;
-        margin: 20px auto !important;
-        display: block !important;
-        width: 60% !important;
-    }}
-    
-    .try-on-button:hover {{
-        transform: translateY(-2px) !important;
-        box-shadow: 0 15px 30px -5px rgba(0, 0, 0, 0.2) !important;
-    }}
-    
-    .advanced-settings-header {{
-        font-family: 'PPValve-PlainMedium', sans-serif !important;
-        margin-top: 15px !important;
-    }}
-    
-    /* Make image upload areas more visually appealing */
-    .file-preview {{
-        border-radius: var(--border-radius) !important;
-        border: 2px dashed #ccc !important;
-        transition: all 0.3s ease !important;
-    }}
-    
-    .file-preview:hover {{
-        border-color: var(--primary-color) !important;
-    }}
-    
-    /* Enhance the output image presentation */
-    #output-img, #masked-img {{
-        border-radius: var(--border-radius) !important;
-        box-shadow: var(--box-shadow) !important;
-        transition: transform 0.3s ease !important;
-    }}
-    
-    #output-img:hover, #masked-img:hover {{
-        transform: scale(1.02) !important;
-    }}
-    
-    /* Style the examples section */
-    .examples-panel {{
-        background-color: rgba(255, 255, 255, 0.7) !important;
-        border-radius: var(--border-radius) !important;
-        padding: 15px !important;
-    }}
-    
-    /* Add card-like effect to columns */
-    .gr-panel {{
-        background-color: white !important;
-        border-radius: var(--border-radius) !important;
-        box-shadow: var(--box-shadow) !important;
         padding: 20px !important;
-        margin: 10px !important;
-        transition: transform 0.2s ease !important;
+        box-shadow: var(--box-shadow) !important;
+        margin: 15px 0 !important;
+        border: 1px solid #32363a !important;
     }}
-    
-    .gr-panel:hover {{
-        transform: translateY(-5px) !important;
-    }}
-    
-    /* Style the accordions */
-    .gr-accordion {{
+
+    /* Inner Style Description textbox: match Random Seed textbox/input color */
+    .prompt-input textarea, .gr-textbox textarea, .gr-textbox input, textarea, input[type="text"] {{
+        background: var(--input-color) !important;
+        color: var(--text-color) !important;
+        border: 1px solid #32363a !important;
         border-radius: var(--border-radius) !important;
-        overflow: hidden !important;
+        font-size: 16px !important;
+        padding: 12px !important;
     }}
-    
-    /* Style the number inputs */
-    .gr-number-input {{
-        border-radius: 8px !important;
+
+    .prompt-input textarea:focus, .gr-textbox textarea:focus {{
+        border-color: var(--primary-color) !important;
+        outline: none !important;
+        box-shadow: 0 0 0 3px rgba(159, 28, 53, 0.1) !important;
     }}
-    
-    /* Add a progress bar animation during processing */
-    @keyframes processing {{
-        0% {{ width: 0%; }}
-        100% {{ width: 100%; }}
+
+    .prompt-input textarea::placeholder, .gr-textbox textarea::placeholder {{
+        color: #94a3b8 !important;
     }}
-    
-    .processing-overlay {{
-        position: absolute;
-        bottom: 0;
-        left: 0;
-        height: 5px;
-        background: linear-gradient(90deg, var(--primary-color), var(--secondary-color));
-        animation: processing 10s ease-in-out infinite;
+
+    .card-header {{
+        color: var(--text-color) !important;
+        font-weight: 600 !important;
+        margin-bottom: 10px !important;
+        font-family: 'PPValve-PlainMedium', sans-serif !important;
     }}
-    
-    /* Add a status indicator */
-    .status-ready {{
-        display: inline-block;
-        padding: 5px 10px;
-        background-color: #10b981;
-        color: white;
-        border-radius: 20px;
-        font-size: 14px;
-        margin-top: 10px;
-    }}
-    
     .footer {{
         text-align: center;
         margin-top: 40px;
@@ -260,9 +136,13 @@ def get_font_css():
         color: var(--text-color);
         opacity: 0.7;
     }}
+    /* The rest of your CSS ... */
     </style>
     """
     return css
+
+
+
 
 def pil_to_binary_mask(pil_image, threshold=0):
     np_image = np.array(pil_image)
@@ -386,7 +266,7 @@ def is_cropping_required(width, height):
     return True
 
 
-def start_tryon(human_img_dict, garm_img, denoise_steps, seed):
+def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
     logging.info("Starting try on")
     print(f"Input: {human_img_dict}")
     #device = "cuda"
@@ -458,8 +338,12 @@ def start_tryon(human_img_dict, garm_img, denoise_steps, seed):
         # Extract the images
         with torch.cuda.amp.autocast():
             with torch.no_grad():
-                # Using a default garment description
-                prompt = "model is wearing a garment"
+                # MODIFIED: Use prompt if provided, otherwise use default
+                if prompt_text and prompt_text.strip():
+                    prompt = prompt_text.strip()
+                else:
+                    prompt = "model is wearing a garment"
+                    
                 negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
                 with torch.inference_mode():
                     (
@@ -474,10 +358,15 @@ def start_tryon(human_img_dict, garm_img, denoise_steps, seed):
                         negative_prompt=negative_prompt,
                     )
                                     
-                    prompt = "a photo of a garment"
+                    # MODIFIED: Enhanced garment description with prompt
+                    if prompt_text and prompt_text.strip():
+                        garment_prompt = f"a photo of a garment, {prompt_text.strip()}"
+                    else:
+                        garment_prompt = "a photo of a garment"
+                        
                     negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
-                    if not isinstance(prompt, List):
-                        prompt = [prompt] * 1
+                    if not isinstance(garment_prompt, List):
+                        garment_prompt = [garment_prompt] * 1
                     if not isinstance(negative_prompt, List):
                         negative_prompt = [negative_prompt] * 1
                     with torch.inference_mode():
@@ -487,7 +376,7 @@ def start_tryon(human_img_dict, garm_img, denoise_steps, seed):
                             _,
                             _,
                         ) = pipe.encode_prompt(
-                            prompt,
+                            garment_prompt,
                             num_images_per_prompt=1,
                             do_classifier_free_guidance=False,
                             negative_prompt=negative_prompt,
@@ -497,7 +386,13 @@ def start_tryon(human_img_dict, garm_img, denoise_steps, seed):
 
                     pose_img =  tensor_transfrom(pose_img).unsqueeze(0).to(device,torch.float16)
                     garm_tensor =  tensor_transfrom(garm_img).unsqueeze(0).to(device,torch.float16)
-                    generator = torch.Generator(device).manual_seed(seed) if seed is not None else None
+                    
+                    # FIXED: Handle seed conversion and random seed case
+                    if seed is None or seed == -1:
+                        generator = None
+                    else:
+                        generator = torch.Generator(device).manual_seed(int(seed))
+                    
                     images = pipe(
                         prompt_embeds=prompt_embeds.to(device,torch.float16),
                         negative_prompt_embeds=negative_prompt_embeds.to(device,torch.float16),
@@ -629,6 +524,33 @@ with image_blocks as demo:
                 variant="primary",
                 elem_classes=["try-on-button"]
             )
+
+    # NEW ADDITION: Prompt section between main content and advanced settings
+    with gr.Row(elem_classes=["prompt-section"]):
+        with gr.Column(elem_classes=["prompt-card"]):
+            gr.Markdown("### Describe the Try-On Style", elem_classes=["card-header"])
+            prompt_input = gr.Textbox(
+                label="Style Description",
+                placeholder="e.g., 'wearing a blue casual t-shirt', 'formal business attire', 'summer outfit'",
+                lines=2,
+                elem_classes=["prompt-input"],
+                value="",
+                info="Describe how you want the garment to look on the person"
+            )
+            
+            # Add example prompts
+            with gr.Row():
+                gr.Examples(
+                    examples=[
+                        ["wearing a casual summer outfit"],
+                        ["formal business attire"],
+                        ["vintage style clothing"],
+                        ["sporty athletic wear"],
+                        ["elegant evening dress"]
+                    ],
+                    inputs=[prompt_input],
+                    label="Example Prompts"
+                )
     
     # Move advanced settings to a standalone row
     with gr.Row(elem_classes=["control-panel"]):
@@ -649,6 +571,7 @@ with image_blocks as demo:
                     maximum=2147483647, 
                     step=1, 
                     value=42,
+                    precision=0,  # FIXED: Force integer display
                     info="Set to -1 for random results each time"
                 )
             
@@ -718,14 +641,14 @@ with image_blocks as demo:
     def clear_processing_status(result, mask):
         return gr.update(value="", visible=False)
     
-    # Set up the click events with status updates
+    # Set up the click events with status updates - UPDATED to include prompt_input
     try_button.click(
         fn=update_processing_status,
         inputs=[imgs, garm_img],
         outputs=[processing_indicator],
     ).then(
         fn=start_tryon,
-        inputs=[imgs, garm_img, denoise_steps, seed],
+        inputs=[imgs, garm_img, prompt_input, denoise_steps, seed],  # Added prompt_input here
         outputs=[image_out, masked_img],
         api_name='tryon'
     ).then(
