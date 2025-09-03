@@ -32,7 +32,7 @@ from torchvision.transforms.functional import to_pil_image
 from src.background_processor import BackgroundProcessor
 
 def get_logo_base64():
-    with open("df.png", "rb") as image_file:
+    with open("logo.jpeg", "rb") as image_file:
         return "data:image/png;base64," + base64.b64encode(image_file.read()).decode('utf-8')
 
 # Function to encode font files to base64
@@ -70,17 +70,26 @@ def get_font_css():
     css = f"""
     <style>
     {css_fonts}
+    
+    .dark {{
+        --background-fill-primary: #171717 !important;
+    }}
 
     :root {{
         --primary-color: #9f1c35;
         --secondary-color: #e58097;
         --accent-color: #f97316;
-        --background-color: #23272a;
-        --panel-color: #23272a;
+        --background-color: #171717;
+        --panel-color: #171717;
         --input-color: #36383b;
         --text-color: #f8fafc;
         --border-radius: 12px;
         --box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.1);
+        --background-fill-primary: #171717 !important;
+        ::selection {{
+            background: #9f1c35 !important;
+            color: #f8fafc !important;
+        }}
     }}
 
     body {{
@@ -136,7 +145,31 @@ def get_font_css():
         color: var(--text-color);
         opacity: 0.7;
     }}
-    /* The rest of your CSS ... */
+    
+    /* Gradient styling for button and title */
+    .try-on-button button {{
+        background: linear-gradient(135deg, #9f1c35 0%, #e58097 50%, #f97316 100%) !important;
+        border: none !important;
+        color: white !important;
+        font-weight: 600 !important;
+        transition: all 0.3s ease !important;
+    }}
+    
+    .try-on-button button:hover {{
+        background: linear-gradient(135deg, #8a162d 0%, #d4738a 50%, #e06514 100%) !important;
+        transform: translateY(-2px) !important;
+        box-shadow: 0 8px 25px rgba(159, 28, 53, 0.3) !important;
+    }}
+    
+    /* Gradient title styling */
+    .gradient-title {{
+        background: linear-gradient(135deg, #9f1c35 0%, #e58097 50%, #f97316 100%);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        background-clip: text;
+        text-shadow: none !important;
+    }}
+    
     </style>
     """
     return css
@@ -502,21 +535,23 @@ def process_tryon_with_prompt(human_img, garm_img, prompt_text):
 # api_open=True will allow this API to be hit using curl
 image_blocks = gr.Blocks(theme='CultriX/gradio-theme', css=get_font_css()).queue(api_open=True)
 with image_blocks as demo:
-    # Header section with title only (no emoji)
+    # Header section with title only (no emoji i hate emojis)
     with gr.Row(elem_classes=["header-container"]):
         logo_base64 = get_logo_base64()
         gr.HTML(f"""
         <div style="display: flex; align-items: center; gap: 15px;">
-            <img src="{logo_base64}" alt="Logo" style="width: 50px; height: 50px;">
-            <h1 style="font-family: 'PPValve-PlainMedium', sans-serif; font-size: 56px; letter-spacing: 1px; color: white; -webkit-text-fill-color: white; margin: 10px 0 5px 0; text-align: left; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">Diffusion-Based Virtual Try-On Framework</h1>
+            <img src="{logo_base64}" alt="Logo" style="width: 80px; height: 80px;">
+            <h1 class="gradient-title" style="font-family: 'PPValve-PlainMedium', sans-serif; font-size: 56px; letter-spacing: 1px; margin: 10px 0 5px 0; text-align: left;">Diffusion-Based Virtual Try-On Framework</h1>
         </div>
         """)
-            
-    # Description and intro
+        
     with gr.Row():
-        gr.Markdown(
-            "A virtual try-on experience powered by Stable Diffusion XL and GarmNet. Upload your photo and a garment to see how it looks on you!",
-            elem_classes=["app-description"]
+        gr.HTML(
+            """
+            <div style="font-family: 'PPValve-PlainMedium', sans-serif; font-size: 18px; line-height: 1.6; color: #e0e0e0; text-align: left;">
+                A virtual try-on experience powered by Stable Diffusion XL and GarmNet. Upload your photo and a garment to see how it looks on you!
+            </div>
+            """
         )
     
     # Main content area with cards
@@ -585,8 +620,7 @@ with image_blocks as demo:
             )
 
     # NEW ADDITION: Prompt section between main content and advanced settings
-    with gr.Row(elem_classes=["prompt-section"]):
-        with gr.Column(elem_classes=["prompt-card"]):
+    with gr.Column(elem_classes=["prompt-section"]):
             gr.Markdown("### Describe the Try-On Style", elem_classes=["card-header"])
             prompt_input = gr.Textbox(
                 label="Style Description",
@@ -605,7 +639,12 @@ with image_blocks as demo:
                         ["formal business attire"],
                         ["vintage style clothing"],
                         ["sporty athletic wear"],
-                        ["elegant evening dress"]
+                        ["elegant evening dress"],
+                        ["casual everyday wear"],
+                        ["streetwear"],
+                        ["minimalist fashion"],
+                        ["retro 80s style"],
+                        ["modern minimalist"],
                     ],
                     inputs=[prompt_input],
                     label="Example Prompts"
@@ -617,7 +656,7 @@ with image_blocks as demo:
             with gr.Row():
                 denoise_steps = gr.Slider(
                     minimum=20, 
-                    maximum=100, 
+                    maximum=100,
                     value=60, 
                     step=1, 
                     label="Denoising Steps", 
@@ -743,4 +782,4 @@ with image_blocks as demo:
         api_name="tryon_full"
     )
 
-image_blocks.launch(share=True)
+image_blocks.launch(share=False)
