@@ -440,6 +440,65 @@ for ex_human in human_list_path:
 ##default human
 
 
+# API Endpoints for Next.js Integration
+def health_check():
+    """Health check endpoint"""
+    return {"status": "healthy", "message": "DiffuseFit API is running"}
+
+def get_examples():
+    """Get available example images"""
+    return {
+        "human_examples": human_list_path,
+        "garment_examples": garm_list_path
+    }
+
+def get_model_info():
+    """Get model configuration information"""
+    return {
+        "model_name": "yisol/IDM-VTON",
+        "image_dimensions": {"width": WIDTH, "height": HEIGHT},
+        "pose_dimensions": {"width": POSE_WIDTH, "height": POSE_HEIGHT},
+        "arm_width": ARM_WIDTH,
+        "category": CATEGORY,
+        "supported_formats": ["jpg", "jpeg", "png"],
+        "max_file_size": "10MB"
+    }
+
+def process_tryon_api(human_img, garm_img, prompt_text="", denoise_steps=60, seed=-1):
+    """API endpoint for try-on processing with all parameters"""
+    try:
+        if human_img is None or garm_img is None:
+            # Return None for both outputs to indicate error
+            return None, None
+        
+        result_image, mask_image = start_tryon(human_img, garm_img, prompt_text, denoise_steps, seed)
+        return result_image, mask_image
+    except Exception as e:
+        # Return None for both outputs to indicate error
+        return None, None
+
+def process_tryon_simple(human_img, garm_img):
+    """Simplified API endpoint with default parameters"""
+    try:
+        if human_img is None or garm_img is None:
+            return None
+        
+        result_image, _ = start_tryon(human_img, garm_img, "", 60, -1)
+        return result_image
+    except Exception as e:
+        return None
+
+def process_tryon_with_prompt(human_img, garm_img, prompt_text):
+    """API endpoint with custom prompt"""
+    try:
+        if human_img is None or garm_img is None:
+            return None
+        
+        result_image, _ = start_tryon(human_img, garm_img, prompt_text, 60, -1)
+        return result_image
+    except Exception as e:
+        return None
+
 # api_open=True will allow this API to be hit using curl
 image_blocks = gr.Blocks(theme='CultriX/gradio-theme', css=get_font_css()).queue(api_open=True)
 with image_blocks as demo:
@@ -449,7 +508,7 @@ with image_blocks as demo:
         gr.HTML(f"""
         <div style="display: flex; align-items: center; gap: 15px;">
             <img src="{logo_base64}" alt="Logo" style="width: 50px; height: 50px;">
-            <h1 style="font-family: 'PPValve-PlainMedium', sans-serif; font-size: 56px; letter-spacing: 1px; color: white; -webkit-text-fill-color: white; margin: 10px 0 5px 0; text-align: left; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">DiffuseFit</h1>
+            <h1 style="font-family: 'PPValve-PlainMedium', sans-serif; font-size: 56px; letter-spacing: 1px; color: white; -webkit-text-fill-color: white; margin: 10px 0 5px 0; text-align: left; text-shadow: 0 2px 10px rgba(0, 0, 0, 0.3);">Diffusion-Based Virtual Try-On Framework</h1>
         </div>
         """)
             
@@ -475,7 +534,7 @@ with image_blocks as demo:
             # Examples directly shown without accordion
             example = gr.Examples(
                 inputs=imgs,
-                examples_per_page=6,
+                examples_per_page=10,
                 examples=human_ex_list
             )
 
@@ -492,7 +551,7 @@ with image_blocks as demo:
             # Examples directly shown without accordion
             example = gr.Examples(
                 inputs=garm_img,
-                examples_per_page=6,
+                examples_per_page=10,
                 examples=garm_list_path
             )
         
@@ -558,8 +617,8 @@ with image_blocks as demo:
             with gr.Row():
                 denoise_steps = gr.Slider(
                     minimum=20, 
-                    maximum=40, 
-                    value=30, 
+                    maximum=100, 
+                    value=60, 
                     step=1, 
                     label="Denoising Steps", 
                     info="More steps = better quality but slower processing",
@@ -570,7 +629,7 @@ with image_blocks as demo:
                     minimum=-1, 
                     maximum=2147483647, 
                     step=1, 
-                    value=42,
+                    value=-1,
                     precision=0,  # FIXED: Force integer display
                     info="Set to -1 for random results each time"
                 )
@@ -655,6 +714,33 @@ with image_blocks as demo:
         fn=clear_processing_status,
         inputs=[image_out, masked_img],
         outputs=[processing_indicator]
+    )
+
+    # Add API endpoints for Next.js integration
+    demo.load(fn=health_check, api_name="health")
+    demo.load(fn=get_examples, api_name="examples")
+    demo.load(fn=get_model_info, api_name="model_info")
+    
+    # Add try-on API endpoints with different parameter combinations
+    demo.load(
+        fn=process_tryon_simple,
+        inputs=[imgs, garm_img],
+        outputs=[image_out],
+        api_name="tryon_simple"
+    )
+    
+    demo.load(
+        fn=process_tryon_with_prompt,
+        inputs=[imgs, garm_img, prompt_input],
+        outputs=[image_out],
+        api_name="tryon_with_prompt"
+    )
+    
+    demo.load(
+        fn=process_tryon_api,
+        inputs=[imgs, garm_img, prompt_input, denoise_steps, seed],
+        outputs=[image_out, masked_img],
+        api_name="tryon_full"
     )
 
 image_blocks.launch(share=True)
