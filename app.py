@@ -299,17 +299,21 @@ def is_cropping_required(width, height):
     return True
 
 
-def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
+def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed, garment_category="upper_body", arm_width="dc", progress=gr.Progress()):
     logging.info("Starting try on")
     print(f"Input: {human_img_dict}")
+    gr.Info("Starting try on....Please wait ~30 secs")
+    progress(0, desc="Initializing virtual try-on...")
     #device = "cuda"
     device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
     
+    progress(0.05, desc="Loading models to device...")
     openpose_model.preprocessor.body_estimation.model.to(device)
     pipe.to(device)
     pipe.unet_encoder.to(device)
     # pipe.garment_net.to(device)
     
+    progress(0.1, desc="Processing input images...")
     # human_img_orig = human_img_dict["background"].convert("RGB")   # ImageEditor
     human_img_orig = human_img_dict.convert("RGB")     # Image
     
@@ -320,6 +324,7 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
     w, h = human_img_orig.size
     is_checked_crop = is_cropping_required(w, h)
 
+    progress(0.15, desc="Preparing garment image...")
     garm_img= garm_img.convert("RGB").resize((WIDTH,HEIGHT))
     if is_checked_crop:
         # This will crop the image to make it Aspect Ratio of 3 x 4. And then at the end revert it back to original dimentions
@@ -341,11 +346,14 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
         human_img = human_img_orig.resize((WIDTH, HEIGHT))
 
     if is_checked:
+        progress(0.2, desc="Analyzing pose and body parts...")
         # internally openpose_model is resizing human_img to resolution 384 if not passed as input
         keypoints = openpose_model(human_img.resize((POSE_WIDTH, POSE_HEIGHT)))
+        progress(0.25, desc="Parsing human body segments...")
         model_parse, _ = parsing_model(human_img.resize((POSE_WIDTH, POSE_HEIGHT)))
+        progress(0.3, desc="Generating clothing mask...")
         # internally get mask location function is resizing model_parse to 384x512 if width & height not passed
-        mask, mask_gray = get_mask_location(ARM_WIDTH, CATEGORY, model_parse, keypoints)
+        mask, mask_gray = get_mask_location(arm_width, garment_category, model_parse, keypoints)
         mask = mask.resize((WIDTH, HEIGHT))
         logging.info("Mask location on model identified")
     else:
@@ -356,6 +364,7 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
     mask_gray = to_pil_image((mask_gray+1.0)/2.0)
 
 
+    progress(0.35, desc="Processing dense pose estimation...")
     human_img_arg = _apply_exif_orientation(human_img.resize((POSE_WIDTH,POSE_HEIGHT)))
     human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
      
@@ -367,6 +376,7 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
     pose_img = pose_img[:,:,::-1]    
     pose_img = Image.fromarray(pose_img).resize((WIDTH,HEIGHT))
     
+    progress(0.4, desc="Encoding text prompts...")
     with torch.no_grad():
         # Extract the images
         with torch.cuda.amp.autocast():
@@ -390,7 +400,8 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
                         do_classifier_free_guidance=True,
                         negative_prompt=negative_prompt,
                     )
-                                    
+                    
+                    progress(0.42, desc="Encoding garment description...")
                     # MODIFIED: Enhanced garment description with prompt
                     if prompt_text and prompt_text.strip():
                         garment_prompt = f"a photo of a garment, {prompt_text.strip()}"
@@ -414,9 +425,12 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
                             do_classifier_free_guidance=False,
                             negative_prompt=negative_prompt,
                         )
+                        
+                        progress(0.48, desc="Finalizing prompt embeddings...")
 
 
 
+                    progress(0.5, desc="Preparing tensors for generation...")
                     pose_img =  tensor_transfrom(pose_img).unsqueeze(0).to(device,torch.float16)
                     garm_tensor =  tensor_transfrom(garm_img).unsqueeze(0).to(device,torch.float16)
                     
@@ -425,6 +439,14 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
                         generator = None
                     else:
                         generator = torch.Generator(device).manual_seed(int(seed))
+                    
+                    progress(0.55, desc=f"Starting diffusion process ({denoise_steps} steps)...")
+                    
+                    # Custom callback to track diffusion progress
+                    def diffusion_progress_callback(step, timestep, latents):
+                        # Progress from 55% to 90% during diffusion
+                        diffusion_progress = 0.55 + (step / denoise_steps) * 0.35
+                        progress(diffusion_progress, desc=f"Diffusion step {step+1}/{denoise_steps}")
                     
                     images = pipe(
                         prompt_embeds=prompt_embeds.to(device,torch.float16),
@@ -443,8 +465,11 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
                         width=WIDTH,
                         ip_adapter_image = garm_img.resize((WIDTH,HEIGHT)),
                         guidance_scale=2.0,
+                        callback=diffusion_progress_callback,
+                        callback_steps=1,
                     )[0]
 
+    progress(0.9, desc="Post-processing result...")
     if is_checked_crop:
         out_img = images[0].resize(crop_size)        
         human_img_orig.paste(out_img, (int(left), int(top)))    
@@ -452,6 +477,8 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed):
     else:
         final_image = images[0]
     
+    progress(1.0, desc="Virtual try-on complete!")
+    gr.Info("Virtual try-on complete!")
     return final_image, mask_gray
 
 garm_list = os.listdir(os.path.join(example_path,"cloth"))
@@ -491,20 +518,25 @@ def get_model_info():
         "model_name": "yisol/IDM-VTON",
         "image_dimensions": {"width": WIDTH, "height": HEIGHT},
         "pose_dimensions": {"width": POSE_WIDTH, "height": POSE_HEIGHT},
-        "arm_width": ARM_WIDTH,
-        "category": CATEGORY,
+        "supported_garment_categories": ["upper_body", "lower_body", "dresses"],
+        "supported_arm_widths": [
+            {"label": "Half Sleeve", "value": "dc"},
+            {"label": "Full Sleeve", "value": "hd"}
+        ],
+        "default_arm_width": "dc",
+        "default_category": "upper_body",
         "supported_formats": ["jpg", "jpeg", "png"],
         "max_file_size": "10MB"
     }
 
-def process_tryon_api(human_img, garm_img, prompt_text="", denoise_steps=60, seed=-1):
+def process_tryon_api(human_img, garm_img, prompt_text="", denoise_steps=60, seed=-1, garment_category="upper_body", arm_width="dc"):
     """API endpoint for try-on processing with all parameters"""
     try:
         if human_img is None or garm_img is None:
             # Return None for both outputs to indicate error
             return None, None
         
-        result_image, mask_image = start_tryon(human_img, garm_img, prompt_text, denoise_steps, seed)
+        result_image, mask_image = start_tryon(human_img, garm_img, prompt_text, denoise_steps, seed, garment_category, arm_width)
         return result_image, mask_image
     except Exception as e:
         # Return None for both outputs to indicate error
@@ -516,7 +548,7 @@ def process_tryon_simple(human_img, garm_img):
         if human_img is None or garm_img is None:
             return None
         
-        result_image, _ = start_tryon(human_img, garm_img, "", 60, -1)
+        result_image, _ = start_tryon(human_img, garm_img, "", 60, -1, "upper_body", "dc")
         return result_image
     except Exception as e:
         return None
@@ -527,7 +559,7 @@ def process_tryon_with_prompt(human_img, garm_img, prompt_text):
         if human_img is None or garm_img is None:
             return None
         
-        result_image, _ = start_tryon(human_img, garm_img, prompt_text, 60, -1)
+        result_image, _ = start_tryon(human_img, garm_img, prompt_text, 60, -1, "upper_body", "dc")
         return result_image
     except Exception as e:
         return None
@@ -621,34 +653,54 @@ with image_blocks as demo:
 
     # NEW ADDITION: Prompt section between main content and advanced settings
     with gr.Column(elem_classes=["prompt-section"]):
-            gr.Markdown("### Describe the Try-On Style", elem_classes=["card-header"])
-            prompt_input = gr.Textbox(
-                label="Style Description",
-                placeholder="e.g., 'wearing a blue casual t-shirt', 'formal business attire', 'summer outfit'",
-                lines=2,
-                elem_classes=["prompt-input"],
-                value="",
-                info="Describe how you want the garment to look on the person"
-            )
-            
-            # Add example prompts
-            with gr.Row():
-                gr.Examples(
-                    examples=[
-                        ["wearing a casual summer outfit"],
-                        ["formal business attire"],
-                        ["vintage style clothing"],
-                        ["sporty athletic wear"],
-                        ["elegant evening dress"],
-                        ["casual everyday wear"],
-                        ["streetwear"],
-                        ["minimalist fashion"],
-                        ["retro 80s style"],
-                        ["modern minimalist"],
-                    ],
-                    inputs=[prompt_input],
-                    label="Example Prompts"
+        gr.Markdown("### Describe the Try-On Style", elem_classes=["card-header"])
+        
+        # Two-column layout for prompt and garment settings
+        with gr.Row():
+            # Left column - Prompt input
+            with gr.Column(scale=2):
+                prompt_input = gr.Textbox(
+                    label="Style Description",
+                    placeholder="e.g., 'wearing a blue casual t-shirt', 'formal business attire', 'summer outfit'",
+                    lines=5,
+                    elem_classes=["prompt-input"],
+                    value="",
+                    info="Describe how you want the garment to look on the person"
                 )
+            
+            # Right column - Garment settings
+            with gr.Column(scale=1):
+                garment_category = gr.Dropdown(
+                    choices=[("Upper Body", "upper_body"), ("Lower Body", "lower_body"), ("Dresses", "dresses")],
+                    value="upper_body",
+                    label="Garment Category",
+                    info="Select the type of garment you're trying on"
+                )
+                arm_width = gr.Dropdown(
+                    choices=[("Half Sleeve", "dc"), ("Full Sleeve", "hd")],
+                    value="dc",
+                    label="Sleeve Type",
+                    info="Choose sleeve length for upper body garments"
+                )
+        
+        # Add example prompts
+        with gr.Row():
+            gr.Examples(
+                examples=[
+                    ["wearing a casual summer outfit"],
+                    ["formal business attire"],
+                    ["vintage style clothing"],
+                    ["sporty athletic wear"],
+                    ["elegant evening dress"],
+                    ["casual everyday wear"],
+                    ["streetwear"],
+                    ["minimalist fashion"],
+                    ["retro 80s style"],
+                    ["modern minimalist"],
+                ],
+                inputs=[prompt_input],
+                label="Example Prompts"
+            )
     
     # Move advanced settings to a standalone row
     with gr.Row(elem_classes=["control-panel"]):
@@ -673,9 +725,14 @@ with image_blocks as demo:
                     info="Set to -1 for random results each time"
                 )
             
+
+            
             with gr.Row():
-                gr.Markdown("*Higher denoising steps will result in better quality but longer processing time.*", 
-                           elem_classes=["settings-note"])
+                gr.Markdown("""
+                **Usage Tips:**
+                - *Higher denoising steps will result in better quality but longer processing time.*
+                - *Random Seed: Set to -1 for different results each time, or use a specific number for reproducible results*
+                """, elem_classes=["settings-note"])
     
     # Footer with info
     with gr.Row(elem_classes=["footer"]):
@@ -746,7 +803,7 @@ with image_blocks as demo:
         outputs=[processing_indicator],
     ).then(
         fn=start_tryon,
-        inputs=[imgs, garm_img, prompt_input, denoise_steps, seed],  # Added prompt_input here
+        inputs=[imgs, garm_img, prompt_input, denoise_steps, seed, garment_category, arm_width],  # Added garment controls
         outputs=[image_out, masked_img],
         api_name='tryon'
     ).then(
@@ -777,9 +834,9 @@ with image_blocks as demo:
     
     demo.load(
         fn=process_tryon_api,
-        inputs=[imgs, garm_img, prompt_input, denoise_steps, seed],
+        inputs=[imgs, garm_img, prompt_input, denoise_steps, seed, garment_category, arm_width],
         outputs=[image_out, masked_img],
         api_name="tryon_full"
     )
 
-image_blocks.launch(share=False)
+image_blocks.launch(share=True)
