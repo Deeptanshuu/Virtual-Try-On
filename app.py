@@ -1,35 +1,8 @@
 import logging
-import math
 import gradio as gr
-from PIL import Image
 import base64
 import os
-from src.tryon_pipeline import StableDiffusionXLInpaintPipeline as TryonPipeline
-from src.unet_hacked_garmnet import UNet2DConditionModel as UNet2DConditionModel_ref
-from src.unet_hacked_tryon import UNet2DConditionModel
-from src.enhanced_garment_net import EnhancedGarmentNetWithTimestep
-from transformers import (
-    CLIPImageProcessor,
-    CLIPVisionModelWithProjection,
-    CLIPTextModel,
-    CLIPTextModelWithProjection,
-)
-from diffusers import DDPMScheduler,AutoencoderKL
-from typing import List
-
-import torch
-import os
-import base64
-from transformers import AutoTokenizer
-import numpy as np
-from utils_mask import get_mask_location
-from torchvision import transforms
-import apply_net
-from preprocess.humanparsing.run_parsing import Parsing
-from preprocess.openpose.run_openpose import OpenPose
-from detectron2.data.detection_utils import convert_PIL_to_numpy,_apply_exif_orientation
-from torchvision.transforms.functional import to_pil_image
-from src.background_processor import BackgroundProcessor
+from tryon_engine import TryOnEngine, WIDTH, HEIGHT, POSE_WIDTH, POSE_HEIGHT
 
 def get_logo_base64():
     with open("logo.jpeg", "rb") as image_file:
@@ -177,126 +150,8 @@ def get_font_css():
 
 
 
-def pil_to_binary_mask(pil_image, threshold=0):
-    np_image = np.array(pil_image)
-    grayscale_image = Image.fromarray(np_image).convert("L")
-    binary_mask = np.array(grayscale_image) > threshold
-    mask = np.zeros(binary_mask.shape, dtype=np.uint8)
-    for i in range(binary_mask.shape[0]):
-        for j in range(binary_mask.shape[1]):
-            if binary_mask[i,j] == True :
-                mask[i,j] = 1
-    mask = (mask*255).astype(np.uint8)
-    output_mask = Image.fromarray(mask)
-    return output_mask
-
-
-base_path = 'yisol/IDM-VTON'
+engine = TryOnEngine()
 example_path = os.path.join(os.path.dirname(__file__), 'example')
-
-unet = UNet2DConditionModel.from_pretrained(
-    base_path,
-    subfolder="unet",
-    torch_dtype=torch.float16,
-)
-unet.requires_grad_(False)
-
-# This is suggestion from Claude for enhanced garment net
-#enhancedGarmentNet = EnhancedGarmentNetWithTimestep()
-#enhancedGarmentNet.to(dtype=torch.float16)
-
-tokenizer_one = AutoTokenizer.from_pretrained(
-    base_path,
-    subfolder="tokenizer",
-    revision=None,
-    use_fast=False,
-)
-tokenizer_two = AutoTokenizer.from_pretrained(
-    base_path,
-    subfolder="tokenizer_2",
-    revision=None,
-    use_fast=False,
-)
-noise_scheduler = DDPMScheduler.from_pretrained(base_path, subfolder="scheduler")
-
-text_encoder_one = CLIPTextModel.from_pretrained(
-    base_path,
-    subfolder="text_encoder",
-    torch_dtype=torch.float16,
-)
-text_encoder_two = CLIPTextModelWithProjection.from_pretrained(
-    base_path,
-    subfolder="text_encoder_2",
-    torch_dtype=torch.float16,
-)
-image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-    base_path,
-    subfolder="image_encoder",
-    torch_dtype=torch.float16,
-    )
-vae = AutoencoderKL.from_pretrained(base_path,
-                                    subfolder="vae",
-                                    torch_dtype=torch.float16,
-)
-
-# "stabilityai/stable-diffusion-xl-base-1.0",
-UNet_Encoder = UNet2DConditionModel_ref.from_pretrained(
-    base_path,
-    subfolder="unet_encoder",
-    torch_dtype=torch.float16,
-)
-
-
-parsing_model = Parsing(0)
-openpose_model = OpenPose(0)
-
-UNet_Encoder.requires_grad_(False)
-image_encoder.requires_grad_(False)
-vae.requires_grad_(False)
-unet.requires_grad_(False)
-text_encoder_one.requires_grad_(False)
-text_encoder_two.requires_grad_(False)
-tensor_transfrom = transforms.Compose(
-            [
-                transforms.ToTensor(),
-                transforms.Normalize([0.5], [0.5]),
-            ]
-    )
-
-pipe = TryonPipeline.from_pretrained(
-        base_path,
-        unet=unet,
-        vae=vae,
-        feature_extractor= CLIPImageProcessor(),
-        text_encoder = text_encoder_one,
-        text_encoder_2 = text_encoder_two,
-        tokenizer = tokenizer_one,
-        tokenizer_2 = tokenizer_two,
-        scheduler = noise_scheduler,
-        image_encoder=image_encoder,
-        torch_dtype=torch.float16,
-)
-pipe.unet_encoder = UNet_Encoder
-# pipe.garment_net = enhancedGarmentNet
-
-# Standard size of shein images
-#WIDTH = int(4160/5)
-#HEIGHT = int(6240/5)
-# Standard size on which model is trained
-WIDTH = int(768)
-HEIGHT = int(1024)
-POSE_WIDTH = int(WIDTH/2)  # int(WIDTH/2)
-POSE_HEIGHT = int(HEIGHT/2)  #int(HEIGHT/2)
-ARM_WIDTH = "dc" # "hd" # hd -> full sleeve, dc for half sleeve 
-CATEGORY = "upper_body" # "lower_body"
-
-
-def is_cropping_required(width, height):
-    # If aspect ratio is 1.33, which is same as standard 3x4 ( 768x1024 ), then no need to crop, else crop
-    aspect_ratio = round(height/width, 2)
-    if aspect_ratio == 1.33:
-        return False
-    return True
 
 
 def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed, garment_category="upper_body", arm_width="dc", progress=gr.Progress()):
@@ -304,179 +159,17 @@ def start_tryon(human_img_dict, garm_img, prompt_text, denoise_steps, seed, garm
     print(f"Input: {human_img_dict}")
     gr.Info("Starting try on....Please wait ~30 secs")
     progress(0, desc="Initializing virtual try-on...")
-    #device = "cuda"
-    device = 'cuda:0' if torch.cuda.is_available() else 'cpu'
-    
-    progress(0.05, desc="Loading models to device...")
-    openpose_model.preprocessor.body_estimation.model.to(device)
-    pipe.to(device)
-    pipe.unet_encoder.to(device)
-    # pipe.garment_net.to(device)
-    
-    progress(0.1, desc="Processing input images...")
     # human_img_orig = human_img_dict["background"].convert("RGB")   # ImageEditor
-    human_img_orig = human_img_dict.convert("RGB")     # Image
-    
-    # Always use auto-crop & auto-mask (previously controlled by UI toggles)
-    is_checked = True  # Auto-generated mask always enabled
-    
-    # is_checked_crop as True if original AR is not same as 2x3 as expected by model
-    w, h = human_img_orig.size
-    is_checked_crop = is_cropping_required(w, h)
-
-    progress(0.15, desc="Preparing garment image...")
-    garm_img= garm_img.convert("RGB").resize((WIDTH,HEIGHT))
-    if is_checked_crop:
-        # This will crop the image to make it Aspect Ratio of 3 x 4. And then at the end revert it back to original dimentions
-        width, height = human_img_orig.size
-        target_width = int(min(width, height * (3 / 4)))
-        target_height = int(min(height, width * (4 / 3)))        
-        
-        left = (width - target_width) / 2
-        right = (width + target_width) / 2
-        # for Landmark, model sizes are 594x879, so we need to reduce the height. In some case the garment on the model is
-        # also getting removed when reducing size from bottom. So we will only reduce height from top for now
-        top = (height - target_height) #top = (height - target_height) / 2        
-        bottom = height #bottom = (height + target_height) / 2
-        cropped_img = human_img_orig.crop((left, top, right, bottom))
-        
-        crop_size = cropped_img.size
-        human_img = cropped_img.resize((WIDTH, HEIGHT))
-    else:
-        human_img = human_img_orig.resize((WIDTH, HEIGHT))
-
-    if is_checked:
-        progress(0.2, desc="Analyzing pose and body parts...")
-        # internally openpose_model is resizing human_img to resolution 384 if not passed as input
-        keypoints = openpose_model(human_img.resize((POSE_WIDTH, POSE_HEIGHT)))
-        progress(0.25, desc="Parsing human body segments...")
-        model_parse, _ = parsing_model(human_img.resize((POSE_WIDTH, POSE_HEIGHT)))
-        progress(0.3, desc="Generating clothing mask...")
-        # internally get mask location function is resizing model_parse to 384x512 if width & height not passed
-        mask, mask_gray = get_mask_location(arm_width, garment_category, model_parse, keypoints)
-        mask = mask.resize((WIDTH, HEIGHT))
-        logging.info("Mask location on model identified")
-    else:
-        mask = pil_to_binary_mask(human_img_dict['layers'][0].convert("RGB").resize((WIDTH, HEIGHT)))
-        # mask = transforms.ToTensor()(mask)
-        # mask = mask.unsqueeze(0)
-    mask_gray = (1-transforms.ToTensor()(mask)) * tensor_transfrom(human_img)
-    mask_gray = to_pil_image((mask_gray+1.0)/2.0)
-
-
-    progress(0.35, desc="Processing dense pose estimation...")
-    human_img_arg = _apply_exif_orientation(human_img.resize((POSE_WIDTH,POSE_HEIGHT)))
-    human_img_arg = convert_PIL_to_numpy(human_img_arg, format="BGR")
-     
-    
-
-    args = apply_net.create_argument_parser().parse_args(('show', './configs/densepose_rcnn_R_50_FPN_s1x.yaml', './ckpt/densepose/model_final_162be9.pkl', 'dp_segm', '-v', '--opts', 'MODEL.DEVICE', device))
-    # verbosity = getattr(args, "verbosity", None)
-    pose_img = args.func(args,human_img_arg)    
-    pose_img = pose_img[:,:,::-1]    
-    pose_img = Image.fromarray(pose_img).resize((WIDTH,HEIGHT))
-    
-    progress(0.4, desc="Encoding text prompts...")
-    with torch.no_grad():
-        # Extract the images
-        with torch.cuda.amp.autocast():
-            with torch.no_grad():
-                # MODIFIED: Use prompt if provided, otherwise use default
-                if prompt_text and prompt_text.strip():
-                    prompt = prompt_text.strip()
-                else:
-                    prompt = "model is wearing a garment"
-                    
-                negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
-                with torch.inference_mode():
-                    (
-                        prompt_embeds,
-                        negative_prompt_embeds,
-                        pooled_prompt_embeds,
-                        negative_pooled_prompt_embeds,
-                    ) = pipe.encode_prompt(
-                        prompt,
-                        num_images_per_prompt=1,
-                        do_classifier_free_guidance=True,
-                        negative_prompt=negative_prompt,
-                    )
-                    
-                    progress(0.42, desc="Encoding garment description...")
-                    # MODIFIED: Enhanced garment description with prompt
-                    if prompt_text and prompt_text.strip():
-                        garment_prompt = f"a photo of a garment, {prompt_text.strip()}"
-                    else:
-                        garment_prompt = "a photo of a garment"
-                        
-                    negative_prompt = "monochrome, lowres, bad anatomy, worst quality, low quality"
-                    if not isinstance(garment_prompt, List):
-                        garment_prompt = [garment_prompt] * 1
-                    if not isinstance(negative_prompt, List):
-                        negative_prompt = [negative_prompt] * 1
-                    with torch.inference_mode():
-                        (
-                            prompt_embeds_c,
-                            _,
-                            _,
-                            _,
-                        ) = pipe.encode_prompt(
-                            garment_prompt,
-                            num_images_per_prompt=1,
-                            do_classifier_free_guidance=False,
-                            negative_prompt=negative_prompt,
-                        )
-                        
-                        progress(0.48, desc="Finalizing prompt embeddings...")
-
-
-
-                    progress(0.5, desc="Preparing tensors for generation...")
-                    pose_img =  tensor_transfrom(pose_img).unsqueeze(0).to(device,torch.float16)
-                    garm_tensor =  tensor_transfrom(garm_img).unsqueeze(0).to(device,torch.float16)
-                    
-                    # FIXED: Handle seed conversion and random seed case
-                    if seed is None or seed == -1:
-                        generator = None
-                    else:
-                        generator = torch.Generator(device).manual_seed(int(seed))
-                    
-                    progress(0.55, desc=f"Starting diffusion process ({denoise_steps} steps)...")
-                    
-                    # Custom callback to track diffusion progress
-                    def diffusion_progress_callback(step, timestep, latents):
-                        # Progress from 55% to 90% during diffusion
-                        diffusion_progress = 0.55 + (step / denoise_steps) * 0.35
-                        progress(diffusion_progress, desc=f"Diffusion step {step+1}/{denoise_steps}")
-                    
-                    images = pipe(
-                        prompt_embeds=prompt_embeds.to(device,torch.float16),
-                        negative_prompt_embeds=negative_prompt_embeds.to(device,torch.float16),
-                        pooled_prompt_embeds=pooled_prompt_embeds.to(device,torch.float16),
-                        negative_pooled_prompt_embeds=negative_pooled_prompt_embeds.to(device,torch.float16),
-                        num_inference_steps=denoise_steps,
-                        generator=generator,
-                        strength = 1.0,
-                        pose_img = pose_img.to(device,torch.float16),
-                        text_embeds_cloth=prompt_embeds_c.to(device,torch.float16),
-                        cloth = garm_tensor.to(device,torch.float16),
-                        mask_image=mask,
-                        image=human_img, 
-                        height=HEIGHT,
-                        width=WIDTH,
-                        ip_adapter_image = garm_img.resize((WIDTH,HEIGHT)),
-                        guidance_scale=2.0,
-                        callback=diffusion_progress_callback,
-                        callback_steps=1,
-                    )[0]
-
-    progress(0.9, desc="Post-processing result...")
-    if is_checked_crop:
-        out_img = images[0].resize(crop_size)        
-        human_img_orig.paste(out_img, (int(left), int(top)))    
-        final_image = human_img_orig
-    else:
-        final_image = images[0]
-    
+    final_image, mask_gray = engine.tryon(
+        human_img_dict,     # Image
+        garm_img,
+        prompt_text=prompt_text,
+        steps=int(denoise_steps),
+        seed=seed,
+        garment_category=garment_category,
+        arm_width=arm_width,
+        progress=progress,
+    )
     progress(1.0, desc="Virtual try-on complete!")
     gr.Info("Virtual try-on complete!")
     return final_image, mask_gray

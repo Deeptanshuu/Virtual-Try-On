@@ -46,7 +46,7 @@ conda activate VTON
 pip install -r requirements.txt
 ```
 
-3. Download the checkpoint files (not included in the repository).
+3. Download the checkpoint files. The files under `ckpt/` in this repository are Git LFS pointers; replace them with the real files from the [IDM-VTON Space](https://huggingface.co/spaces/yisol/IDM-VTON/tree/main/ckpt).
 
 ## Usage
 
@@ -87,6 +87,8 @@ curl -X POST http://localhost:7860/api/tryon -F "imgs=@person.jpg" -F "garm_img=
 ## Project Structure
 
 - `app.py`: Main application file with the Gradio interface
+- `tryon_engine.py`: Headless try-on engine (model loading, preprocessing, sampling) shared by the app and experiment scripts
+- `experiments/`: Research scripts, e.g. `benchmark.py` for speed, GPU memory and seed reproducibility
 - `apply_net.py`: DensePose application
 - `utils_mask.py`: Mask generation utilities
 - `preprocess/`: Contains OpenPose and human parsing models
